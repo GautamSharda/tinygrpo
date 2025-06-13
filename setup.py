@@ -24,8 +24,8 @@ os.chdir("..")
 run_command("pip install safetensors torch transformers numpy")
 
 # Update and install git-lfs
-run_command("sudo apt update")
-run_command("sudo apt install -y git-lfs")
+run_command("apt update")
+run_command("apt install -y git-lfs")
 
 # Clone model repository
 run_command("git clone https://huggingface.co/Qwen/Qwen3-0.6B-Base")

@@ -9,7 +9,7 @@ def test(prompt: str, max_new_tokens=5):
     hf_times = []
     tg_out = None
     hf_out = None
-    for _ in range(100):
+    for _ in range(1):
         start_time = time.time()
         tg_out = qwen3_tg(prompt, max_new_tokens)
         tg_times.append(time.time() - start_time)
@@ -29,7 +29,7 @@ def test(prompt: str, max_new_tokens=5):
 
 
 def qwen3_tg(prompt: str, max_new_tokens=5):
-    import tinygrad
+    import tinygrad.tinygrad as tinygrad
     from safetensors.torch import load_file # Change with tinygrad torch_load in nn.state.py
     import json
     ckpt = load_file("Qwen3-0.6B-Base/model.safetensors") # Load only the weights you need as you need them in functions, don't pass this around
