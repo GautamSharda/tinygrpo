@@ -9,7 +9,6 @@ def run_command(command):
         print(result.stderr, file=sys.stderr)
 
 # Clone repositories
-run_command("git clone https://github.com/gautamsharda/tinygrpo.git")
 run_command("git clone https://github.com/tinygrad/tinygrad.git")
 
 # Set up virtual environment
