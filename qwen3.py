@@ -182,9 +182,10 @@ def qwen3_tg(prompt: str, max_new_tokens=5):
                 dim = d_head  # 128
                 base = theta  # 100000.0
                 # torch.arange(0, dim, 2) -> tinygrad.Tensor.arange(0, dim, 2)
-                indices = tinygrad.Tensor.arange(0, dim, 2).float()  # [0, 2, 4, ..., 126] (64 elements)
+                dev = Q.device
+                indices = tinygrad.Tensor.arange(0, dim, 2, device=dev).float()  # [0, 2, 4, ..., 126] (64 elements)
                 inv_freq = 1.0 / (base ** (indices / dim))           # (64,)
-                pos = tinygrad.Tensor.arange(max_len).float().reshape(-1, 1)     # (L, 1)
+                pos = tinygrad.Tensor.arange(max_len, device=dev).float().reshape(-1, 1)     # (L, 1)
                 freqs = pos @ inv_freq.reshape(1, -1)                            # (L, 64) matrix multiply
                 # Duplicate frequencies: (L, 64) -> (L, 128)
                 freqs_full = freqs.cat(freqs, dim=-1)                            # (L, 128)
@@ -224,17 +225,25 @@ def qwen3_tg(prompt: str, max_new_tokens=5):
 
         h = _rmsnorm(E, gamma=tinygrad.Tensor(ckpt[f"model.layers.{i}.input_layernorm.weight"].float().numpy()))
         # 2.  linear projections -----------------------------------------------
-        Q = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.q_proj.weight"].float().numpy()).transpose()       # (B,L,2048)
-        K = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.k_proj.weight"].float().numpy()).transpose()       # (B,L,1024)
-        V = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.v_proj.weight"].float().numpy()).transpose()       # (B,L,1024)
+        dev = E.device                          # keep everything on the same device
+        Q = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.q_proj.weight"].float().numpy(),
+                                 device=dev).transpose()
+        K = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.k_proj.weight"].float().numpy(),
+                                 device=dev).transpose()
+        V = h @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.v_proj.weight"].float().numpy(),
+                                 device=dev).transpose()
         # 3.  reshape into heads -----------------------------------------------
         Q = Q.reshape(*Q.shape[:-1], 16, 128)       # (B,L,16,128)
         K = K.reshape(*K.shape[:-1],  8, 128)       # (B,L,8,128)
         V = V.reshape(*V.shape[:-1],  8, 128)       # (B,L,8,128)
         # 4. QK normalization ---------------------------------------------------
-        Q, K = _qk_norm(Q, K, 
-                        gamma_q=tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.q_norm.weight"].float().numpy()),
-                        gamma_k=tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.k_norm.weight"].float().numpy()))
+        Q, K = _qk_norm(
+            Q, K,
+            gamma_q=tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.q_norm.weight"].float().numpy(),
+                                    device=dev),
+            gamma_k=tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.k_norm.weight"].float().numpy(),
+                                    device=dev)
+        )
         # 5. Transpose to match HuggingFace layout -----------------------------
         Q = Q.transpose(1, 2)  # (B,L,16,128) → (B,16,L,128)  
         K = K.transpose(1, 2)  # (B,L,8,128) → (B,8,L,128)
@@ -245,13 +254,19 @@ def qwen3_tg(prompt: str, max_new_tokens=5):
         att = _flash_gqa(Q, K, V)    # (B,L,16,128)
         # 9.  concat heads & output proj ---------------------------------------
         att = att.reshape(*E.shape[:-1], 2048)           # (B,L,1024)
-        o = att @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.o_proj.weight"].float().numpy()).transpose()                  # residual + Wo
+        o = att @ tinygrad.Tensor(ckpt[f"model.layers.{i}.self_attn.o_proj.weight"].float().numpy(),
+                                  device=dev).transpose()
         x = o + E
-        pn = _rmsnorm(x, tinygrad.Tensor(ckpt[f"model.layers.{i}.post_attention_layernorm.weight"].float().numpy()))
-        up   = pn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.up_proj.weight"].float().numpy()).transpose()                    # (B,L,3072)
-        gate = pn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.gate_proj.weight"].float().numpy()).transpose()                  # (B,L,3072)
+        pn = _rmsnorm(x,
+                      tinygrad.Tensor(ckpt[f"model.layers.{i}.post_attention_layernorm.weight"].float().numpy(),
+                                      device=dev))
+        up   = pn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.up_proj.weight"].float().numpy(),
+                                    device=dev).transpose()
+        gate = pn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.gate_proj.weight"].float().numpy(),
+                                    device=dev).transpose()
         ffn  = tinygrad.Tensor.silu(gate) * up
-        ffn  = ffn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.down_proj.weight"].float().numpy()).transpose()                # (B,L,1024)
+        ffn  = ffn @ tinygrad.Tensor(ckpt[f"model.layers.{i}.mlp.down_proj.weight"].float().numpy(),
+                                     device=dev).transpose()
         act = ffn + x                           # residual
         return act
 
@@ -267,17 +282,20 @@ def qwen3_tg(prompt: str, max_new_tokens=5):
         for l in range(28):
             act = _transformer(act, l)
         # -------- 10. final RMSNorm + logits ---------------------------------
-        final_gamma = tinygrad.Tensor(ckpt["model.norm.weight"].float().numpy())
+        final_gamma = tinygrad.Tensor(ckpt["model.norm.weight"].float().numpy(), device=embeddings.device)
         last_hidden = _rmsnorm(act, final_gamma)            # (1, L, 1024)
-        logits = last_hidden @ tinygrad.Tensor(              # (1, L, V)
-            ckpt["model.embed_tokens.weight"].float().numpy()
+        logits = last_hidden @ tinygrad.Tensor(
+            ckpt["model.embed_tokens.weight"].float().numpy(),
+            device=embeddings.device
         ).transpose()
         # -------- 11. greedy sampling ---------------------------------------
         next_id = int(logits[:, -1].argmax(-1).item())       # scalar python int
         # Add the new token to our running list
         generation_ids.append(next_id)
         # Only embed the new token and concatenate
-        new_token = tinygrad.Tensor([[next_id]], dtype=tinygrad.dtypes.long)
+        new_token = tinygrad.Tensor([[next_id]],
+                                    dtype=tinygrad.dtypes.long,
+                                    device=embeddings.device)
         new_embedding = _embed(new_token, weights=tinygrad.Tensor(ckpt["model.embed_tokens.weight"].float().numpy()))
         embeddings = embeddings.cat(new_embedding, dim=1)  # Concatenate along sequence dimension
         # stop when <|im_end|> is reached
