@@ -29,7 +29,7 @@ def test(prompt: str, max_new_tokens=5):
 
 
 def qwen3_tg(prompt: str, max_new_tokens=5):
-    import tinygrad.tinygrad as tinygrad
+    import tinygrad
     from safetensors.torch import load_file # Change with tinygrad torch_load in nn.state.py
     import json
     ckpt = load_file("Qwen3-0.6B-Base/model.safetensors") # Load only the weights you need as you need them in functions, don't pass this around
