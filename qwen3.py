@@ -54,7 +54,7 @@ def qwen3_tg(prompt: str, max_new_tokens=5):
             *,
             add_bos: bool = False,
             add_eos: bool = False,
-            device: str = "cpu",
+            device: str = tinygrad.Device.DEFAULT,
             max_length: int | None = None) -> tinygrad.Tensor:
         """
         Byte‑level BPE encode Qwen‑style.
